@@ -8,13 +8,13 @@ from keras.layers import Dense
 from keras.optimizers import Adam
 from keras.models import Sequential
 
-EPISODES = 300
+EPISODES = 500
 
 
 # 카트폴 예제에서의 DQN 에이전트
 class DQNAgent:
     def __init__(self, state_size, action_size):
-        self.render = False
+        self.render = True
         self.load_model = False
 
         # 상태와 행동의 크기 정의
@@ -74,8 +74,8 @@ class DQNAgent:
 
     # 리플레이 메모리에서 무작위로 추출한 배치로 모델 학습
     def train_model(self):
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+        #if self.epsilon > self.epsilon_min:
+        #    self.epsilon *= self.epsilon_decay
 
         # 메모리에서 배치 크기만큼 무작위로 샘플 추출
         mini_batch = random.sample(self.memory, self.batch_size)
@@ -113,6 +113,7 @@ if __name__ == "__main__":
     env = gym.make('CartPole-v1')
     state_size = env.observation_space.shape[0]
     action_size = env.action_space.n
+    env._max_episode_steps = 10000
 
     # DQN 에이전트 생성
     agent = DQNAgent(state_size, action_size)
@@ -135,8 +136,6 @@ if __name__ == "__main__":
             # 선택한 행동으로 환경에서 한 타임스텝 진행
             next_state, reward, done, info = env.step(action)
             next_state = np.reshape(next_state, [1, state_size])
-            # 에피소드가 중간에 끝나면 -100 보상
-            reward = reward if not done or score == 499 else -100
 
             # 리플레이 메모리에 샘플 <s, a, r, s'> 저장
             agent.append_sample(state, action, reward, next_state, done)
@@ -151,7 +150,6 @@ if __name__ == "__main__":
                 # 각 에피소드마다 타깃 모델을 모델의 가중치로 업데이트
                 agent.update_target_model()
 
-                score = score if score == 500 else score + 100
                 # 에피소드마다 학습 결과 출력
                 scores.append(score)
                 episodes.append(e)
@@ -161,6 +159,10 @@ if __name__ == "__main__":
                       len(agent.memory), "  epsilon:", agent.epsilon)
 
                 # 이전 10개 에피소드의 점수 평균이 490보다 크면 학습 중단
-                if np.mean(scores[-min(10, len(scores)):]) > 490:
+                if np.mean(scores[-min(10, len(scores)):]) > 9950:
                     agent.model.save_weights("./save_model/cartpole_dqn.h5")
                     sys.exit()
+
+        if len(agent.memory) >= agent.train_start:
+            if agent.epsilon > agent.epsilon_min:
+                agent.epsilon -= 1.5 / EPISODES
