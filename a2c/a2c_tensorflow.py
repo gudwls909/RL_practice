@@ -40,17 +40,20 @@ class Environment(object):
 
 
 class A2C(object):
-	def __init__(self, state_size, action_size, sess, learning_rate, replay, discount_factor):
+	def __init__(self, state_size, action_size, sess, learning_rate_actor,
+	             learning_rate_critic, replay, discount_factor):
 		self.state_size = state_size
 		self.action_size = action_size
 		self.sess = sess
-		self.lr = learning_rate
+		self.lr_actor = learning_rate_actor
+		self.lr_critic = learning_rate_critic
 		self.replay = replay
 		self.discount_factor = discount_factor
 
 		self.states = tf.placeholder(tf.float32, [None, self.state_size])
 		self.actions = tf.placeholder(tf.int64, [None])
 		self.target = tf.placeholder(tf.float32, [None])
+		self.advantage = tf.placeholder(tf.float32, [None])
 
 		self.actor = self.build_actor('actor')
 		self.critic = self.build_critic('critic')
@@ -59,7 +62,6 @@ class A2C(object):
 		pass
 
 	def build_actor(self, name):
-		self.sess.run(tf.global_variables_initializer())
 		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
 			h1 = tf.layers.dense(self.states, 25, activation=tf.nn.relu,
 			                     kernel_initializer=tf.initializers.truncated_normal)
@@ -69,7 +71,6 @@ class A2C(object):
 			pass
 
 	def build_critic(self, name):
-		self.sess.run(tf.global_variables_initializer())
 		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
 			h1 = tf.layers.dense(self.states, 25, activation=tf.nn.relu,
 			                     kernel_initializer=tf.initializers.truncated_normal)
@@ -82,9 +83,10 @@ class A2C(object):
 
 	def build_actor_optimizer(self):
 		actions_one_hot = tf.one_hot(self.actions, self.action_size, 1.0, 0.0)
-		q_value = tf.reduce_sum(tf.multiply(actions_one_hot, self.prediction_Q), axis=1)
-		loss = tf.reduce_mean(tf.square(self.target - q_value))
-		train_op = tf.train.AdamOptimizer(self.lr).minimize(loss)
+		action_prob = tf.reduce_sum(self.actor * actions_one_hot, axis=1)
+		cross_entropy = tf.log(action_prob) * self.advantage
+		loss = -tf.reduce_sum(cross_entropy)
+		train_op = tf.train.AdamOptimizer(self.lr_actor).minimize(loss)
 		return loss, train_op
 		pass
 
@@ -92,22 +94,24 @@ class A2C(object):
 		actions_one_hot = tf.one_hot(self.actions, self.action_size, 1.0, 0.0)
 		q_value = tf.reduce_sum(tf.multiply(actions_one_hot, self.prediction_Q), axis=1)
 		loss = tf.reduce_mean(tf.square(self.target - q_value))
-		train_op = tf.train.AdamOptimizer(self.lr).minimize(loss)
+		train_op = tf.train.AdamOptimizer(self.lr_critic).minimize(loss)
 		return loss, train_op
 		pass
 
-	def train_network(self):
-		states, actions, rewards, next_states, terminals = self.replay.mini_batch()
-
-		target_Q = self.sess.run(self.target_Q, feed_dict={self.states: next_states})
-		target = []
-		for i in range(self.replay.batch_size):
+	def train_network(self, states, actions, rewards, next_states, terminals):
+		current_Q = self.sess.run(self.critic, feed_dict={self.states: states})
+		next_Q = self.sess.run(self.critic, feed_dict={self.states: next_states})
+		target, advantage = [], []
+		for i in range(self.batch_size):
 			if terminals[i]:
+				advantage.append(rewards[i] - current_Q[i])
 				target.append(rewards[i])
 			else:
-				target.append(rewards[i] + self.discount_factor * np.max(target_Q[i]))
+				advantage.append(rewards[i] + self.discount_factor * np.max(next_Q[i]) - current_Q[i])
+				target.append(rewards[i] + self.discount_factor * np.max(next_Q[i]))
 
-		self.sess.run(self.train_op, feed_dict={self.states: states, self.actions: actions, self.target: target})
+		self.sess.run(self.train_actor, feed_dict={self.states: states, self.actions: actions, self.advantage: target})
+		self.sess.run(self.train_critic, feed_dict={self.states: states, self.actions: actions, self.target: target})
 		pass
 
 	def predict_Q(self, states):

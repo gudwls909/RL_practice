@@ -82,12 +82,10 @@ class DQN(object):
 
 		self.prediction_Q = self.build_network('pred')
 		self.target_Q = self.build_network('target')
-		self.update_target_network()
 		self.train_op = self.build_optimizer()
 		pass
 
 	def build_network(self, name):
-		self.sess.run(tf.global_variables_initializer())
 		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
 			h1 = tf.layers.dense(self.states, 25, activation=tf.nn.relu,
 			                     kernel_initializer=tf.initializers.truncated_normal)
@@ -164,6 +162,8 @@ class Agent(object):
 
 	def train(self):
 		scores, episodes = [], []
+		self.dqn.update_target_network()  # 첫 시작때 target network를 prediction network와 똑같이
+
 		for e in range(self.episodes):
 			terminal = False
 			score = 0
