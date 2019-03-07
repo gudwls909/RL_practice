@@ -176,7 +176,7 @@ class Agent(object):
 				self.replay.add(state, action, reward, next_state, terminal)
 
 				if len(self.replay.memory) >= 1000:
-					if self.eps > 0.1:
+					if self.eps > 0.01:
 						self.eps -= 0.9 / self.epsilon_decay_steps
 					self.dqn.train_network()
 
@@ -229,7 +229,7 @@ if __name__ == "__main__":
 	# parameter 저장하는 parser
 	parser = argparse.ArgumentParser(description="CartPole")
 	parser.add_argument('--env_name', default='CartPole-v1', type=str)
-	parser.add_argument('--epsilon_decay_steps', default=1e4, type=int, help="how many steps for epsilon to be 0.1")
+	parser.add_argument('--epsilon_decay_steps', default=2e4, type=int, help="how many steps for epsilon to be 0.1")
 	parser.add_argument('--learning_rate', default=0.001, type=float)
 	parser.add_argument('--batch_size', default=64, type=int)
 	parser.add_argument('--discount_factor', default=0.99, type=float)
