@@ -48,10 +48,10 @@ class A2C(object):
 #		self.replay = replay
 		self.discount_factor = discount_factor
 
-		self.state = tf.placeholder(tf.float32, [1, self.state_size])
-		self.action = tf.placeholder(tf.float64, [None])
-		self.target = tf.placeholder(tf.float32, [1])
-		self.advantage = tf.placeholder(tf.float32, [1])
+		self.state = tf.placeholder(tf.float32, [None, self.state_size])
+		self.action = tf.placeholder(tf.float64, [None, ])
+		self.target = tf.placeholder(tf.float32, [None])
+		self.advantage = tf.placeholder(tf.float32, [None])
 
 		self.actor = self.build_actor('actor')
 		self.critic = self.build_critic('critic')
@@ -61,61 +61,53 @@ class A2C(object):
 
 	def build_actor(self, name):
 		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
-			h1 = tf.layers.dense(self.state, 25, activation=tf.nn.relu,
-			                     kernel_initializer=tf.initializers.truncated_normal)
-			output = tf.layers.dense(h1, self.action_size,
-			                     kernel_initializer=tf.initializers.truncated_normal)
-			return output
+			h1 = tf.layers.dense(self.state, 24, activation=tf.nn.relu)
+			output = tf.layers.dense(h1, self.action_size)
+			softmax = tf.nn.softmax(output)
+			return softmax
 			pass
 
 	def build_critic(self, name):
 		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
-			h1 = tf.layers.dense(self.state, 25, activation=tf.nn.relu,
-			                     kernel_initializer=tf.initializers.truncated_normal)
-			h2 = tf.layers.dense(h1, 25, activation=tf.nn.relu,
-			                     kernel_initializer=tf.initializers.truncated_normal)
-			output = tf.layers.dense(h2, 1,
-			                     kernel_initializer=tf.initializers.truncated_normal)
+			h1 = tf.layers.dense(self.state, 24, activation=tf.nn.relu)
+			h2 = tf.layers.dense(h1, 24, activation=tf.nn.relu)
+			output = tf.layers.dense(h2, 1)
 			return output
 			pass
 
 	def actor_optimizer(self):
-		opt = tf.train.AdamOptimizer(self.lr_actor)
+		opt = tf.train.AdamOptimizer(-self.lr_actor)
 		actor_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor')
 		grads_action = opt.compute_gradients(tf.log(self.actor), var_list=actor_parameters)  # actor parameter의 gradient만 원해서
-		'''
+
 		grads_score = []
-		print(self.advantage, grads_action[0][0])
-		print(grads_action[0])
 		for i in range(len(grads_action)):
-			grads_score.append((grads_action[i][0] * self.advantage, grads_action[i][1] * self.advantage))
-		#grads_score = grads_action.dot(self.advantage)
-		print(grads_score[0])
+			grads_score.append((grads_action[i][0] * self.advantage, grads_action[i][1]))
+
 		train_op = opt.apply_gradients(grads_score)
-		print('a')
-		''' #뭔가안됨
 		return train_op
 		pass
 
 	def critic_optimizer(self):
-		loss = tf.reduce_mean(tf.square(self.advantage))    #  mse loss
+		loss = tf.reduce_mean(tf.square(self.target - self.critic))    # mse loss
 		train_op = tf.train.AdamOptimizer(self.lr_critic).minimize(loss)
 		return loss, train_op
 		pass
 
 	def train_network(self, state, action, reward, next_state, terminal):
 		#  batch size = 1
-		current_Q = self.sess.run(self.critic, feed_dict={self.state: state})
-		next_Q = self.sess.run(self.critic, feed_dict={self.state: next_state})
+
+		current_V = self.sess.run(self.critic, feed_dict={self.state: state})[0]
+		next_V = self.sess.run(self.critic, feed_dict={self.state: next_state})[0]
 		if terminal:
-			advantage = reward - current_Q
-			target = append(reward)
+			advantage = reward - current_V
+			target = [reward]
 		else:
-			advantage = reward + self.discount_factor * next_Q - current_Q
-			target = reward + self.discount_factor * next_Q
+			advantage = reward + self.discount_factor * next_V - current_V
+			target = reward + self.discount_factor * next_V
 
 		self.sess.run(self.train_actor, feed_dict={self.state: state, self.action: action, self.advantage: advantage})
-		self.sess.run(self.train_critic, feed_dict={self.state: state, self.action: action, self.target: target})
+		self.sess.run(self.train_critic, feed_dict={self.state: state, self.target: target})
 		pass
 
 
@@ -123,12 +115,12 @@ class Agent(object):
 	def __init__(self, args, sess):
 		# CartPole 환경
 		self.env = gym.make(args.env_name)
-		self.eps = 1.0  # epsilon
+#		self.eps = 1.0  # epsilon
 		self.sess = sess
 		self.state_size = self.env.observation_space.shape[0]
 		self.action_size = self.env.action_space.n
 		self.env._max_episode_steps = 10000  # 최대 타임스텝 수 10000
-		self.epsilon_decay_steps = args.epsilon_decay_steps
+#		self.epsilon_decay_steps = args.epsilon_decay_steps
 		self.learning_rate = args.learning_rate
 #		self.batch_size = args.batch_size
 		self.discount_factor = args.discount_factor
@@ -140,7 +132,7 @@ class Agent(object):
 		pass
 
 	def select_action(self, state):
-		self.sess.run(self.a2c.actor, feed_dict={self.a2c.state: state})
+		policy = self.sess.run(self.a2c.actor, feed_dict={self.a2c.state: state}).flatten()
 		return np.random.choice(self.action_size, 1, p=policy)[0]
 		pass
 
@@ -158,10 +150,8 @@ class Agent(object):
 				next_state = np.reshape(next_state, [1, self.state_size])
 #				self.replay.add(state, action, reward, next_state, terminal)
 
-				if len(self.replay.memory) >= 1000:
-					if self.eps > 0.1:
-						self.eps -= 0.9 / self.epsilon_decay_steps
-					self.a2c.train_network(state, action, reward, next_state, terminal)
+#				if len(self.replay.memory) >= 1000:
+				self.a2c.train_network(state, [action], reward, next_state, terminal)
 
 				score += reward
 				state = next_state
@@ -169,8 +159,7 @@ class Agent(object):
 				if terminal:
 					scores.append(score)
 					episodes.append(e)
-					print('episode:', e, ' score:', score, ' epsilon', self.eps,
-					      ' last 10 mean score', np.mean(scores[-min(10, len(scores)):]))
+					print('episode:', e, ' score:', score, ' last 10 mean score', np.mean(scores[-min(10, len(scores)):]))
 
 					if np.mean(scores[-min(10, len(scores)):]) > 9950:
 						print('Already well trained')
@@ -211,11 +200,11 @@ if __name__ == "__main__":
 	# parameter 저장하는 parser
 	parser = argparse.ArgumentParser(description="CartPole")
 	parser.add_argument('--env_name', default='CartPole-v1', type=str)
-	parser.add_argument('--epsilon_decay_steps', default=1e4, type=int, help="how many steps for epsilon to be 0.1")
-	parser.add_argument('--learning_rate', default=[0.001, 0.001], type=list)
+#	parser.add_argument('--epsilon_decay_steps', default=7e4, type=int, help="how many steps for epsilon to be 0.1")
+	parser.add_argument('--learning_rate', default=[0.001, 0.005], type=list)
 	#parser.add_argument('--batch_size', default=64, type=int)
 	parser.add_argument('--discount_factor', default=0.99, type=float)
-	parser.add_argument('--episodes', default=100, type=float)
+	parser.add_argument('--episodes', default=1000, type=float)
 	sys.argv = ['-f']
 	args = parser.parse_args()
 

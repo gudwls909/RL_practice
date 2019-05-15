@@ -13,7 +13,7 @@ EPISODES = 1000
 # 카트폴 예제에서의 액터-크리틱(A2C) 에이전트
 class A2CAgent:
     def __init__(self, state_size, action_size):
-        self.render = True
+        self.render = False
         self.load_model = False
         # 상태와 행동의 크기 정의
         self.state_size = state_size
