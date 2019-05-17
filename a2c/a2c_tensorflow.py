@@ -49,7 +49,7 @@ class A2C(object):
 		self.discount_factor = discount_factor
 
 		self.state = tf.placeholder(tf.float32, [None, self.state_size])
-		self.action = tf.placeholder(tf.float64, [None, ])
+		self.action = tf.placeholder(tf.float32, [None, self.action_size])
 		self.target = tf.placeholder(tf.float32, [None])
 		self.advantage = tf.placeholder(tf.float32, [None])
 
@@ -76,9 +76,11 @@ class A2C(object):
 			pass
 
 	def actor_optimizer(self):
+		action_prob = tf.reduce_sum(self.action * self.actor, axis=1)
+
 		opt = tf.train.AdamOptimizer(-self.lr_actor)
 		actor_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor')
-		grads_action = opt.compute_gradients(tf.log(self.actor), var_list=actor_parameters)  # actor parameter의 gradient만 원해서
+		grads_action = opt.compute_gradients(tf.log(action_prob), var_list=actor_parameters)  # actor parameter의 gradient만 원해서
 
 		grads_score = []
 		for i in range(len(grads_action)):
@@ -96,6 +98,8 @@ class A2C(object):
 
 	def train_network(self, state, action, reward, next_state, terminal):
 		#  batch size = 1
+		act = np.zeros([1, self.action_size])
+		act[0][action] = 1
 
 		current_V = self.sess.run(self.critic, feed_dict={self.state: state})[0]
 		next_V = self.sess.run(self.critic, feed_dict={self.state: next_state})[0]
@@ -106,7 +110,7 @@ class A2C(object):
 			advantage = reward + self.discount_factor * next_V - current_V
 			target = reward + self.discount_factor * next_V
 
-		self.sess.run(self.train_actor, feed_dict={self.state: state, self.action: action, self.advantage: advantage})
+		self.sess.run(self.train_actor, feed_dict={self.state: state, self.action: act, self.advantage: advantage})
 		self.sess.run(self.train_critic, feed_dict={self.state: state, self.target: target})
 		pass
 
@@ -161,7 +165,7 @@ class Agent(object):
 					episodes.append(e)
 					print('episode:', e, ' score:', score, ' last 10 mean score', np.mean(scores[-min(10, len(scores)):]))
 
-					if np.mean(scores[-min(10, len(scores)):]) > 9950:
+					if np.mean(scores[-min(10, len(scores)):]) > 5000:
 						print('Already well trained')
 						return
 		pass

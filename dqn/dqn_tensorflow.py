@@ -246,8 +246,8 @@ if __name__ == "__main__":
 	with tf.Session(config=config) as sess:
 		agent = Agent(args, sess)
 		sess.run(tf.global_variables_initializer())  # tensorflow graph가 다 만들어지고 난 후에 해야됨
-		agent.train()
-		agent.save()
+		#agent.train()
+		#agent.save()
 		agent.load()
 		rewards = []
 		for i in range(20):
