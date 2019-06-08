@@ -7,12 +7,15 @@ import numpy as np
 import argparse
 import tensorflow as tf
 from collections import deque
+import sys
+import time
 
 
 class Environment(object):
-	def __init__(self, env, state_size):
+	def __init__(self, env, state_size, action_size):
 		self.env = env
 		self.state_size = state_size
+		self.action_size = action_size
 		pass
 
 	def render_worker(self, render):
@@ -22,7 +25,7 @@ class Environment(object):
 
 	def new_episode(self):
 		state = self.env.reset()
-		state = np.reshape(state, [1, self.state_size])
+		#state = np.reshape(state, [1, self.state_size])
 		return state
 		pass
 
@@ -61,63 +64,64 @@ class ReplayMemory(object):
 
 
 class DDPG(object):
-	def __init__(self, state_size,  sess, learning_rate_actor, learning_rate_critic,
-	             replay, discount_factor):
+	def __init__(self, state_size,  action_size, sess, learning_rate_actor, learning_rate_critic,
+	             replay, discount_factor, a_bound):
 		self.state_size = state_size
+		self.action_size = action_size
 		self.sess = sess
 		self.lr_actor = learning_rate_actor
 		self.lr_critic = learning_rate_critic
 		self.replay = replay
 		self.discount_factor = discount_factor
+		self.action_limit = a_bound
 
 		self.state = tf.placeholder(tf.float32, [None, self.state_size])
-		self.target = tf.placeholder(tf.float32, [None])
+		self.target = tf.placeholder(tf.float32, [None, 1])
 
-		self.actor = self.build_actor('actor')
-		self.actor_target = self.build_actor('actor_target')
-		self.critic = self.build_critic('critic')
-		self.critic_target = self.build_critic_target('critic_target')
+		self.actor = self.build_actor('actor_eval', True)
+		self.actor_target = self.build_actor('actor_target', False)
+		self.critic = self.build_critic('critic_eval', True, self.actor)
+		self.critic_target = self.build_critic('critic_target', False, self.actor_target)
+
+		self.actor_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor_eval')
+		self.actor_target_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor_target')
+		self.critic_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='critic_eval')
+		self.critic_target_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='critic_target')
+
+		self.replace = [tf.assign(t, (1 - 0.01) * t + 0.01 * e)
+				   for t, e in zip(self.actor_target_vars + self.critic_target_vars, self.actor_vars + self.critic_vars)]
+
 		self.train_actor = self.actor_optimizer()
 		self.train_critic = self.critic_optimizer()
 		pass
 
-	def build_actor(self, name):
-		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
-			h1 = tf.layers.dense(self.state, 24, activation=tf.nn.relu)
-			output = tf.layers.dense(h1, 1)
-			return output
-			pass
+	def build_actor(self, scope, trainable):
+		actor_hidden_size = 30
+		with tf.variable_scope(scope):
+			hidden1 = tf.layers.dense(self.state, actor_hidden_size, activation=tf.nn.relu, name='l1', trainable=trainable)
+			a = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.tanh, name='a', trainable=trainable)
+			return tf.multiply(a, self.action_limit, name='scaled_a')
 
-	def build_critic(self, name):
-		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
-			h1 = tf.layers.dense(self.state, 24) + tf.layers.dense(self.actor, 24)
-			h1_relu = tf.nn.relu(h1)
-			output = tf.layers.dense(h1_relu, 1)
-			return output
-			pass
-
-	def build_critic_target(self, name):
-		with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
-			h1 = tf.layers.dense(self.state, 24) + tf.layers.dense(self.actor_target, 24)
-			h1_relu = tf.nn.relu(h1)
-			output = tf.layers.dense(h1_relu, 1)
-			return output
-			pass
+	def build_critic(self, scope, trainable, a):
+		with tf.variable_scope(scope):
+			critic_hidden_size =30
+			hidden1 = tf.layers.dense(self.state, critic_hidden_size, name='s1', trainable=trainable) \
+					  + tf.layers.dense(a, critic_hidden_size, name='a1', trainable=trainable) \
+					  + tf.get_variable('b1', [1, critic_hidden_size], trainable=trainable)
+			hidden1 = tf.nn.relu(hidden1)
+			return tf.layers.dense(hidden1, 1, trainable=trainable)
 
 	def actor_optimizer(self):
-		actor_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor')
-
 		loss = tf.reduce_mean(self.critic)
-		train_op = tf.train.AdamOptimizer(-self.lr_actor).minimize(loss, var_list=actor_parameters)
+		train_op = tf.train.AdamOptimizer(-self.lr_actor).minimize(loss, var_list=self.actor_vars)
 
 		return train_op
 		pass
 
 	def critic_optimizer(self):
-		critic_parameters = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='critic')
-
-		loss = tf.reduce_mean(tf.square(self.target - self.critic))    # mse loss
-		train_op = tf.train.AdamOptimizer(self.lr_critic).minimize(loss, var_list=critic_parameters)
+		loss = tf.losses.mean_squared_error(labels=self.target, predictions=self.critic)
+		#loss = tf.reduce_mean(tf.square(self.target - self.critic))
+		train_op = tf.train.AdamOptimizer(self.lr_critic).minimize(loss, var_list=self.critic_vars)
 		return train_op
 		pass
 
@@ -129,99 +133,86 @@ class DDPG(object):
 		target = []
 		for i in range(self.replay.batch_size):
 			if terminals[i]:
-				target.append(rewards[i][0])
+				target.append(rewards[i])
 			else:
-				target.append(rewards[i][0] + self.discount_factor * next_target_q[i][0])
+				target.append(rewards[i] + self.discount_factor * next_target_q[i])
+		target = np.reshape(target, [self.replay.batch_size, 1])
 
 		self.sess.run(self.train_actor, feed_dict={self.state: states})
-		self.sess.run(self.train_critic, feed_dict={self.state: states, self.target: target})
+		self.sess.run(self.train_critic, feed_dict={self.state: states, self.target: target, self.actor: actions})
 		pass
 
 	def update_target_network(self):
-		copy_op = []
-		actor_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='actor')
-		actor_target_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='actor_target')
-		for actor_var, actor_target_var in zip(actor_vars, actor_target_vars):
-			copy_op.append(actor_target_var.assign(actor_var.value()))
-		self.sess.run(copy_op)
-
-		copy_op = []
-		critic_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='critic')
-		critic_target_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='critic_target')
-		for critic_var, critic_target_var in zip(critic_vars, critic_target_vars):
-			copy_op.append(critic_target_var.assign(critic_var.value()))
-		self.sess.run(copy_op)
+		self.sess.run(self.replace)
+		pass
 
 
 class Agent(object):
 	def __init__(self, args, sess):
 		# CartPole 환경
 		self.env = gym.make(args.env_name)
-#		self.eps = 1.0  # epsilon
 		self.sess = sess
 		self.state_size = self.env.observation_space.shape[0]
-#		self.action_size = self.env.action_space.n
-#		self.env._max_episode_steps = 10000  # 최대 타임스텝 수 10000
-#		self.epsilon_decay_steps = args.epsilon_decay_steps
+		self.action_size = self.env.action_space.shape[0]
+		self.env._max_episode_steps = 200 # 최대 타임스텝 수
+		self.a_bound = self.env.action_space.high
 		self.learning_rate = args.learning_rate
 		self.batch_size = args.batch_size
 		self.discount_factor = args.discount_factor
 		self.episodes = args.episodes
-		self.ENV = Environment(self.env, self.state_size)
+		self.ENV = Environment(self.env, self.state_size, self.action_size)
 		self.replay = ReplayMemory(self.env, self.state_size, self.batch_size)
-		self.ddpg = DDPG(self.state_size, self.sess, self.learning_rate[0], self.learning_rate[1],
-		               self.replay, self.discount_factor)
+		self.ddpg = DDPG(self.state_size, self.action_size, self.sess, self.learning_rate[0], self.learning_rate[1],
+		               self.replay, self.discount_factor, self.a_bound)
 		self.saver = tf.train.Saver()
-		self.action_variance = 3
 		pass
 
+	'''
 	def select_action(self, state):
-		#action = self.sess.run(self.ddpg.actor, feed_dict={self.ddpg.state: state})
 		return np.clip(
-			np.random.normal(self.sess.run(self.ddpg.actor, {self.ddpg.state: state}), self.action_variance), -2,
+			np.random.normal(self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0], self.action_variance), -2,
 			2)
-		#return action
 		pass
+	'''
+
+	def noise_select_action(self, state):
+		return np.clip((0.15 * (0 - self.sess.run(self.ddpg.actor, {self.ddpg.state: state})) \
+			   + 0.2 * np.random.randn(self.batch_size, self.action_size))[0], -2, 2)   # OU function
+
+	def select_action(self, state):
+		return np.clip(self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0], -2, 2)
 
 	def train(self):
 		scores, episodes = [], []
 		for e in range(self.episodes):
 			terminal = False
 			score = 0
-			step = 0
 			state = self.ENV.new_episode()
 			state = np.reshape(state, [1, self.state_size])
 
 			while not terminal:
-				action = self.select_action(state)
+				action = self.noise_select_action(state)
 				next_state, reward, terminal = self.ENV.act(action)
-				next_state = np.reshape(next_state, [1, self.state_size])
+				state = state[0]
 				self.replay.add(state, action, reward, next_state, terminal)
 
-				if len(self.replay.memory) >= 1000:
-					self.ddpg.train_network()
-					self.action_variance *= .9995
-
-				score += reward[0]
-				state = next_state
-				step += 1
-
-				if step % 1000 == 0:
+				if len(self.replay.memory) >= self.batch_size:
 					self.ddpg.update_target_network()
+					self.ddpg.train_network()
+
+				score += reward
+				state = np.reshape(next_state, [1, self.state_size])
 
 				if terminal:
-					self.ddpg.update_target_network()
 					scores.append(score)
 					episodes.append(e)
-					print('episode:', e+1, ' score:', score, ' last 10 mean score', np.mean(scores[-min(10, len(scores)):]))
+					print('episode:', e+1, ' score:', int(score), ' last 10 mean score', int(np.mean(scores[-min(10, len(scores)):])))
 
-					if np.mean(scores[-min(10, len(scores)):]) > 5000:
-						print('Already well trained')
-						return
 		pass
 
 	def play(self):
 		state = self.ENV.new_episode()
+		state = np.reshape(state, [1, self.state_size])
 		self.ENV.render_worker(True)
 
 		terminal = False
@@ -232,7 +223,8 @@ class Agent(object):
 			next_state = np.reshape(next_state, [1, self.state_size])
 			score += reward
 			state = next_state
-
+			self.ENV.render_worker(True)
+			time.sleep(0.02)
 			if terminal:
 				return score
 		pass
@@ -250,14 +242,14 @@ class Agent(object):
 
 if __name__ == "__main__":
 
+	print(sys.executable)
 	# parameter 저장하는 parser
 	parser = argparse.ArgumentParser(description="Pendulum")
 	parser.add_argument('--env_name', default='Pendulum-v0', type=str)
-#	parser.add_argument('--epsilon_decay_steps', default=7e4, type=int, help="how many steps for epsilon to be 0.1")
 	parser.add_argument('--learning_rate', default=[0.002, 0.001], type=list)
-	parser.add_argument('--batch_size', default=64, type=int)
-	parser.add_argument('--discount_factor', default=0.99, type=float)
-	parser.add_argument('--episodes', default=1000, type=float)
+	parser.add_argument('--batch_size', default=32, type=int)
+	parser.add_argument('--discount_factor', default=0.9, type=float)
+	parser.add_argument('--episodes', default=100, type=float)
 	sys.argv = ['-f']
 	args = parser.parse_args()
 
@@ -276,7 +268,7 @@ if __name__ == "__main__":
 		rewards = []
 		for i in range(20):
 			r = agent.play()
-			rewards.append(r)
+			rewards.append(int(r))
 		mean = np.mean(rewards)
 		print(rewards)
 		print(mean)

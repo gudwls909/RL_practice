@@ -197,12 +197,12 @@ class Agent(object):
 
 	def play(self):
 		state = self.ENV.new_episode()
-		self.ENV.render_worker(True)
 		self.eps = 0.0
 
 		terminal = False
 		score = 0
 		while not terminal:
+			self.ENV.render_worker(True)
 			action = self.select_action(state)
 			next_state, reward, terminal = self.ENV.act(action)
 			next_state = np.reshape(next_state, [1, self.state_size])
