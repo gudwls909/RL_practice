@@ -165,6 +165,8 @@ class Agent(object):
 		self.ddpg = DDPG(self.state_size, self.action_size, self.sess, self.learning_rate[0], self.learning_rate[1],
 		               self.replay, self.discount_factor, self.a_bound)
 		self.saver = tf.train.Saver()
+		self.epsilon = 1
+		self.explore = 2e4
 		pass
 
 	'''
@@ -175,9 +177,16 @@ class Agent(object):
 		pass
 	'''
 
+	def ou_function(self, mu, theta, sigma):
+		x = np.ones(self.action_size) * mu
+		dx = theta * (mu - x) + sigma * np.random.randn(self.action_size)
+		return x + dx
+
 	def noise_select_action(self, state):
-		return np.clip((0.15 * (0 - self.sess.run(self.ddpg.actor, {self.ddpg.state: state})) \
-			   + 0.2 * np.random.randn(self.batch_size, self.action_size))[0], -2, 2)   # OU function
+		action = self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0]
+		noise = self.epsilon * self.ou_function(0, 0.15, 0.25)
+		#print(action, noise)
+		return np.clip(action + noise, -2, 2)
 
 	def select_action(self, state):
 		return np.clip(self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0], -2, 2)
@@ -191,10 +200,12 @@ class Agent(object):
 			state = np.reshape(state, [1, self.state_size])
 
 			while not terminal:
+				#self.epsilon -= 1.0/self.explore
+				self.epsilon = max(self.epsilon, 0)
 				action = self.noise_select_action(state)
 				next_state, reward, terminal = self.ENV.act(action)
 				state = state[0]
-				self.replay.add(state, action, reward, next_state, terminal)
+				self.replay.add(state, action, reward / 10, next_state, terminal)
 
 				if len(self.replay.memory) >= self.batch_size:
 					self.ddpg.update_target_network()
@@ -206,7 +217,7 @@ class Agent(object):
 				if terminal:
 					scores.append(score)
 					episodes.append(e)
-					print('episode:', e+1, ' score:', int(score), ' last 10 mean score', int(np.mean(scores[-min(10, len(scores)):])))
+					print('episode:', e+1, ' score:', int(score), 'eps:', self.epsilon, ' last 10 mean score', int(np.mean(scores[-min(10, len(scores)):])))
 
 		pass
 
