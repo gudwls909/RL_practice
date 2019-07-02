@@ -1,4 +1,3 @@
-import cv2
 import os
 import sys
 import gym
@@ -7,7 +6,6 @@ import numpy as np
 import argparse
 import tensorflow as tf
 from collections import deque
-import sys
 import time
 
 
