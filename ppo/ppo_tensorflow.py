@@ -81,8 +81,8 @@ class PPO(object):
         self.advantage = tf.placeholder(tf.float32, [None, 1])
         self.action = tf.placeholder(tf.float32, [None, self.action_size])
 
-        self.actor, self.sampled-action = self.build_actor('actor_eval', True)
-        self.actor_target = self.build_actor('actor_target', False)
+        self.actor, self.sampled_action = self.build_actor('actor_eval', True)
+        self.actor_target, _ = self.build_actor('actor_target', False)
         self.critic = self.build_critic('critic_eval', True,)
         self.critic_target = self.build_critic('critic_target', False)
 
@@ -102,13 +102,14 @@ class PPO(object):
         actor_hidden_size = 30
         with tf.variable_scope(scope):
             hidden1 = tf.layers.dense(self.state, actor_hidden_size, activation=tf.nn.relu, name='l1', trainable=trainable)
-            #m = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.tanh, name='m', trainable=trainable)
-            #m = tf.multiply(m, self.action_limit, name='scaled_a')  # constrained mean value
-            m = tf.layers.dense(hidden1, self.action_size, name='m', trainable=trainable)  # [batch_size, action_size]
-            std = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.sigmoid, name='std', trainable=trainable)
+            m = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.tanh, name='m', trainable=trainable)
+            m = tf.multiply(m, self.action_limit, name='scaled_a')  # constrained mean value
+            #m = tf.layers.dense(hidden1, self.action_size, name='m', trainable=trainable)  # [batch_size, action_size]
+            std = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.relu, name='std', trainable=trainable)
+            std = tf.add(std, tf.constant(0.1, shape=(self.replay.batch_size, self.action_size)))
             output = tf.contrib.distributions.Normal(loc=m, scale=std)
-            sampled_output = output.sample()
-            return output, m, ampled_output  # [batch_size, action_size]
+            sampled_output = output.sample([self.action_size])
+            return output, sampled_output  # [batch_size, action_size]
             pass
 
     def build_critic(self, scope, trainable):
@@ -120,7 +121,7 @@ class PPO(object):
             pass
 
     def actor_optimizer(self):
-        ratio = self.actor[0].prob(self.action) / tf.add(self.actor_target[0].prob(self.action), tf.constant(1e-5,dtype=tf.float32, shape=(32,self.action_size)))
+        ratio = self.actor.prob(self.action) / tf.add(self.actor_target.prob(self.action), tf.constant(1e-5, shape=(self.replay.batch_size, self.action_size)))
         min_a = ratio * self.advantage
         min_b = tf.clip_by_value(ratio, 1-self.eps, 1+self.eps) * self.advantage
         loss = tf.reduce_mean(tf.math.minimum(min_a, min_b))
@@ -165,8 +166,8 @@ class PPO(object):
 
         self.sess.run(self.train_actor, feed_dict={self.state: states, self.advantage: advantage, self.action: actions})
         self.sess.run(self.train_critic, feed_dict={self.state: states, self.target: target})
-        print(self.sess.run(self.actor_loss, feed_dict={self.state: states, self.advantage: advantage, self.action: actions}),
-              self.sess.run(self.critic_loss, feed_dict={self.state: states, self.target: target}))
+        #print(self.sess.run(self.actor_loss, feed_dict={self.state: states, self.advantage: advantage, self.action: actions}),
+        #      self.sess.run(self.critic_loss, feed_dict={self.state: states, self.target: target}))
         pass
 
     def update_target_network(self):
@@ -197,34 +198,19 @@ class Agent(object):
         self.explore = 2e4
         pass
 
-    '''
-    def select_action(self, state):
-        return np.clip(
-            np.random.normal(self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0], self.action_variance), -2,
-            2)
-        pass
-    '''
-
     def select_action(self, state):
         #policy = self.sess.run(self.ppo.actor[0].sample(1), feed_dict={self.ppo.state: state})[0][0]
         #print(policy)
         #print('m', self.sess.run(self.ppo.actor[1], feed_dict={self.ppo.state: state})[0][0], 'std',
         #      self.sess.run(self.ppo.actor[2], feed_dict={self.ppo.state: state})[0][0], 'hidden1',
         #      self.sess.run(self.ppo.actor[3], feed_dict={self.ppo.state: state})[0][0])
-        t1 = time.time()
-        output = self.ppo.actor[0]
-        t2 = time.time()
-        policy = self.sess.run(output.sample([self.action_size])[0][0], feed_dict={self.ppo.state: state})
-        t3 = time.time()
+        policy = self.sess.run(self.ppo.sampled_action, feed_dict={self.ppo.state: state})[0][0]
         policy_clip = np.clip(policy, -self.a_bound, self.a_bound)
-        t4 = time.time()
-
-        return policy_clip, t1, t2, t3, t4
+        return policy_clip
         pass
 
     def train(self):
         scores, episodes = [], []
-        l1, l2, l3, l4, l5 = [], [], [], [], []
         for e in range(self.episodes):
             terminal = False
             score = 0
@@ -235,12 +221,9 @@ class Agent(object):
                 #self.ENV.render_worker(True)
                 #self.epsilon -= 1.0/self.explore
                 #self.epsilon = max(self.epsilon, 0)
-                action, t1, t2, t3, t4 = self.select_action(state)
-                l1.append(t2 - t1)
-                l2.append(t3 - t2)
-                l3.append(t4 - t3)
+                action = self.select_action(state)
                 next_state, reward, terminal = self.ENV.act(action)
-                print('action', action)
+                #print('action', action)
                 state = state[0]
                 self.replay.add(state, action, reward / 10, next_state, terminal)
 
@@ -253,7 +236,6 @@ class Agent(object):
                 state = np.reshape(next_state, [1, self.state_size])
 
                 if terminal:
-                    print(sum(l1), sum(l2), sum(l3))
                     scores.append(score)
                     episodes.append(e)
                     print('episode:', e+1, ' score:', int(score), ' last 10 mean score', int(np.mean(scores[-min(10, len(scores)):])))
