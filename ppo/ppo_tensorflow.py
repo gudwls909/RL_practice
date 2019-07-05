@@ -7,6 +7,8 @@ import argparse
 import tensorflow as tf
 from collections import deque
 import time
+import tensorflow_probability as tfp
+tfd = tfp.distributions
 
 
 class Environment(object):
@@ -57,29 +59,32 @@ class ReplayMemory(object):
             actions.append(mini_batch[i][1])
             rewards.append(mini_batch[i][2])
             terminals.append(mini_batch[i][4])
-        return states, actions, rewards, next_states, terminals
+        return states, np.asarray(actions), rewards, next_states, terminals
         pass
 
 
-class DDPG(object):
-    def __init__(self, state_size,  action_size, sess, learning_rate_actor, learning_rate_critic,
+class PPO(object):
+    def __init__(self, state_size,  action_size, sess, learning_rate_actor, learning_rate_critic, epsilon,
                  replay, discount_factor, a_bound):
         self.state_size = state_size
         self.action_size = action_size
         self.sess = sess
         self.lr_actor = learning_rate_actor
         self.lr_critic = learning_rate_critic
+        self.eps = epsilon
         self.replay = replay
         self.discount_factor = discount_factor
         self.action_limit = a_bound
 
         self.state = tf.placeholder(tf.float32, [None, self.state_size])
         self.target = tf.placeholder(tf.float32, [None, 1])
+        self.advantage = tf.placeholder(tf.float32, [None, 1])
+        self.action = tf.placeholder(tf.float32, [None, self.action_size])
 
-        self.actor = self.build_actor('actor_eval', True)
+        self.actor, self.sampled-action = self.build_actor('actor_eval', True)
         self.actor_target = self.build_actor('actor_target', False)
-        self.critic = self.build_critic('critic_eval', True, self.actor)
-        self.critic_target = self.build_critic('critic_target', False, self.actor_target)
+        self.critic = self.build_critic('critic_eval', True,)
+        self.critic_target = self.build_critic('critic_target', False)
 
         self.actor_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor_eval')
         self.actor_target_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor_target')
@@ -89,55 +94,79 @@ class DDPG(object):
         self.replace = [tf.assign(t, (1 - 0.01) * t + 0.01 * e)
                    for t, e in zip(self.actor_target_vars + self.critic_target_vars, self.actor_vars + self.critic_vars)]
 
-        self.train_actor = self.actor_optimizer()
-        self.train_critic = self.critic_optimizer()
+        self.train_actor, self.actor_loss = self.actor_optimizer()
+        self.train_critic, self.critic_loss = self.critic_optimizer()
         pass
 
     def build_actor(self, scope, trainable):
         actor_hidden_size = 30
         with tf.variable_scope(scope):
             hidden1 = tf.layers.dense(self.state, actor_hidden_size, activation=tf.nn.relu, name='l1', trainable=trainable)
-            a = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.tanh, name='a', trainable=trainable)
-            return tf.multiply(a, self.action_limit, name='scaled_a')
+            #m = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.tanh, name='m', trainable=trainable)
+            #m = tf.multiply(m, self.action_limit, name='scaled_a')  # constrained mean value
+            m = tf.layers.dense(hidden1, self.action_size, name='m', trainable=trainable)  # [batch_size, action_size]
+            std = tf.layers.dense(hidden1, self.action_size, activation=tf.nn.sigmoid, name='std', trainable=trainable)
+            output = tf.contrib.distributions.Normal(loc=m, scale=std)
+            sampled_output = output.sample()
+            return output, m, ampled_output  # [batch_size, action_size]
+            pass
 
-    def build_critic(self, scope, trainable, a):
+    def build_critic(self, scope, trainable):
         with tf.variable_scope(scope):
             critic_hidden_size =30
-            hidden1 = tf.layers.dense(self.state, critic_hidden_size, name='s1', trainable=trainable) \
-                      + tf.layers.dense(a, critic_hidden_size, name='a1', trainable=trainable) \
-                      + tf.get_variable('b1', [1, critic_hidden_size], trainable=trainable)
-            hidden1 = tf.nn.relu(hidden1)
-            return tf.layers.dense(hidden1, 1, trainable=trainable)
+            hidden1 = tf.layers.dense(self.state, critic_hidden_size, activation=tf.nn.relu, name='s1', trainable=trainable)
+            output = tf.layers.dense(hidden1, 1, trainable=trainable)
+            return output
+            pass
 
     def actor_optimizer(self):
-        loss = tf.reduce_mean(self.critic)
+        ratio = self.actor[0].prob(self.action) / tf.add(self.actor_target[0].prob(self.action), tf.constant(1e-5,dtype=tf.float32, shape=(32,self.action_size)))
+        min_a = ratio * self.advantage
+        min_b = tf.clip_by_value(ratio, 1-self.eps, 1+self.eps) * self.advantage
+        loss = tf.reduce_mean(tf.math.minimum(min_a, min_b))
         train_op = tf.train.AdamOptimizer(-self.lr_actor).minimize(loss, var_list=self.actor_vars)
-
-        return train_op
+        return train_op, loss
         pass
 
     def critic_optimizer(self):
         loss = tf.losses.mean_squared_error(labels=self.target, predictions=self.critic)
-        #loss = tf.reduce_mean(tf.square(self.target - self.critic))
         train_op = tf.train.AdamOptimizer(self.lr_critic).minimize(loss, var_list=self.critic_vars)
-        return train_op
+        return train_op, loss
         pass
 
     def train_network(self):
         states, actions, rewards, next_states, terminals = self.replay.mini_batch()
 
-        next_target_q = self.sess.run(self.critic_target, feed_dict={self.state: next_states})
+        current_v = self.sess.run(self.critic, feed_dict={self.state: states})
+        next_target_v = self.sess.run(self.critic_target, feed_dict={self.state: next_states})
 
         target = []
+        advantage = []
         for i in range(self.replay.batch_size):
             if terminals[i]:
                 target.append(rewards[i])
+                advantage.append(rewards[i] - current_v[i])
             else:
-                target.append(rewards[i] + self.discount_factor * next_target_q[i])
+                target.append(rewards[i] + self.discount_factor * next_target_v[i])
+                advantage.append(rewards[i] + self.discount_factor * next_target_v[i] - current_v[i])
         target = np.reshape(target, [self.replay.batch_size, 1])
+        advantage = np.reshape(advantage, [self.replay.batch_size, 1])
 
-        self.sess.run(self.train_actor, feed_dict={self.state: states})
-        self.sess.run(self.train_critic, feed_dict={self.state: states, self.target: target, self.actor: actions})
+        #print(np.asarray(actions))
+        #print(self.sess.run(self.actor.prob(actions), feed_dict={self.state: states}))
+        '''
+        policy_cur = self.sess.run(self.actor, feed_dict={self.state: states})
+        policy_cur = policy_cur[0][actions]
+        policy_old = self.sess.run(self.actor_target, feed_dict={self.state: next_states})
+        policy_old = policy_old[0][actions]
+        ratio = np.reshape(policy_cur / policy_old, [1, self.replay.batch_size])
+        print(ratio)
+        '''
+
+        self.sess.run(self.train_actor, feed_dict={self.state: states, self.advantage: advantage, self.action: actions})
+        self.sess.run(self.train_critic, feed_dict={self.state: states, self.target: target})
+        print(self.sess.run(self.actor_loss, feed_dict={self.state: states, self.advantage: advantage, self.action: actions}),
+              self.sess.run(self.critic_loss, feed_dict={self.state: states, self.target: target}))
         pass
 
     def update_target_network(self):
@@ -152,16 +181,17 @@ class Agent(object):
         self.sess = sess
         self.state_size = self.env.observation_space.shape[0]
         self.action_size = self.env.action_space.shape[0]
-        self.env._max_episode_steps = 200 # 최대 타임스텝 수
-        self.a_bound = self.env.action_space.high
+        #self.env._max_episode_steps = 200  # 최대 타임스텝 수
+        self.a_bound = self.env.action_space.high[0]
+        self.epsilon = args.epsilon
         self.learning_rate = args.learning_rate
         self.batch_size = args.batch_size
         self.discount_factor = args.discount_factor
         self.episodes = args.episodes
         self.ENV = Environment(self.env, self.state_size, self.action_size)
         self.replay = ReplayMemory(self.env, self.state_size, self.batch_size)
-        self.ddpg = DDPG(self.state_size, self.action_size, self.sess, self.learning_rate[0], self.learning_rate[1],
-                       self.replay, self.discount_factor, self.a_bound)
+        self.ppo = PPO(self.state_size, self.action_size, self.sess, self.learning_rate[0], self.learning_rate[1],
+                       self.epsilon, self.replay, self.discount_factor, self.a_bound)
         self.saver = tf.train.Saver()
         self.epsilon = 1
         self.explore = 2e4
@@ -175,22 +205,26 @@ class Agent(object):
         pass
     '''
 
-    def ou_function(self, mu, theta, sigma):
-        x = np.ones(self.action_size) * mu
-        dx = theta * (mu - x) + sigma * np.random.randn(self.action_size)
-        return x + dx
-
-    def noise_select_action(self, state):
-        action = self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0]
-        noise = self.epsilon * self.a_bound * self.ou_function(0, 0.15, 0.15)
-        #print(action, noise)
-        return np.clip(action + noise, -2, 2)
-
     def select_action(self, state):
-        return np.clip(self.sess.run(self.ddpg.actor, {self.ddpg.state: state})[0], -2, 2)
+        #policy = self.sess.run(self.ppo.actor[0].sample(1), feed_dict={self.ppo.state: state})[0][0]
+        #print(policy)
+        #print('m', self.sess.run(self.ppo.actor[1], feed_dict={self.ppo.state: state})[0][0], 'std',
+        #      self.sess.run(self.ppo.actor[2], feed_dict={self.ppo.state: state})[0][0], 'hidden1',
+        #      self.sess.run(self.ppo.actor[3], feed_dict={self.ppo.state: state})[0][0])
+        t1 = time.time()
+        output = self.ppo.actor[0]
+        t2 = time.time()
+        policy = self.sess.run(output.sample([self.action_size])[0][0], feed_dict={self.ppo.state: state})
+        t3 = time.time()
+        policy_clip = np.clip(policy, -self.a_bound, self.a_bound)
+        t4 = time.time()
+
+        return policy_clip, t1, t2, t3, t4
+        pass
 
     def train(self):
         scores, episodes = [], []
+        l1, l2, l3, l4, l5 = [], [], [], [], []
         for e in range(self.episodes):
             terminal = False
             score = 0
@@ -198,31 +232,37 @@ class Agent(object):
             state = np.reshape(state, [1, self.state_size])
 
             while not terminal:
+                #self.ENV.render_worker(True)
                 #self.epsilon -= 1.0/self.explore
-                self.epsilon = max(self.epsilon, 0)
-                action = self.noise_select_action(state)
+                #self.epsilon = max(self.epsilon, 0)
+                action, t1, t2, t3, t4 = self.select_action(state)
+                l1.append(t2 - t1)
+                l2.append(t3 - t2)
+                l3.append(t4 - t3)
                 next_state, reward, terminal = self.ENV.act(action)
+                print('action', action)
                 state = state[0]
                 self.replay.add(state, action, reward / 10, next_state, terminal)
 
                 if len(self.replay.memory) >= self.batch_size:
-                    self.ddpg.update_target_network()
-                    self.ddpg.train_network()
+                    self.ppo.update_target_network()
+                    self.ppo.train_network()
 
                 score += reward
+                #print(reward)
                 state = np.reshape(next_state, [1, self.state_size])
 
                 if terminal:
+                    print(sum(l1), sum(l2), sum(l3))
                     scores.append(score)
                     episodes.append(e)
-                    print('episode:', e+1, ' score:', int(score), 'eps:', self.epsilon, ' last 10 mean score', int(np.mean(scores[-min(10, len(scores)):])))
+                    print('episode:', e+1, ' score:', int(score), ' last 10 mean score', int(np.mean(scores[-min(10, len(scores)):])))
 
         pass
 
     def play(self):
         state = self.ENV.new_episode()
         state = np.reshape(state, [1, self.state_size])
-        self.ENV.render_worker(True)
 
         terminal = False
         score = 0
@@ -259,6 +299,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--discount_factor', default=0.9, type=float)
     parser.add_argument('--episodes', default=100, type=float)
+    parser.add_argument('--epsilon', default=0.2, type=float)
     sys.argv = ['-f']
     args = parser.parse_args()
 
