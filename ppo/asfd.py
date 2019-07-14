@@ -37,7 +37,7 @@ class Environment(object):
 
 class ReplayMemory(object):
     def __init__(self, env, state_size, batch_size):
-        self.memory = deque(maxlen=10000)
+        self.memory = deque(maxlen=1000)
         self.env = env
         self.state_size = state_size
         self.batch_size = batch_size
@@ -114,7 +114,7 @@ class PPO(object):
 
     def build_critic(self, scope, trainable):
         with tf.variable_scope(scope):
-            critic_hidden_size =30
+            critic_hidden_size = 30
             hidden1 = tf.layers.dense(self.state, critic_hidden_size, activation=tf.nn.relu, name='s1', trainable=trainable)
             output = tf.layers.dense(hidden1, 1, trainable=trainable)
             return output
@@ -194,8 +194,6 @@ class Agent(object):
         self.ppo = PPO(self.state_size, self.action_size, self.sess, self.learning_rate[0], self.learning_rate[1],
                        self.epsilon, self.replay, self.discount_factor, self.a_bound)
         self.saver = tf.train.Saver()
-        self.epsilon = 1
-        self.explore = 2e4
         pass
 
     def select_action(self, state):
@@ -219,8 +217,6 @@ class Agent(object):
 
             while not terminal:
                 #self.ENV.render_worker(True)
-                #self.epsilon -= 1.0/self.explore
-                #self.epsilon = max(self.epsilon, 0)
                 action = self.select_action(state)
                 next_state, reward, terminal = self.ENV.act(action)
                 #print('action', action)

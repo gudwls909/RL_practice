@@ -11,7 +11,15 @@ config.log_device_placement = False
 config.gpu_options.allow_growth = True
 
 with tf.Session(config=config) as sess:
+    a = tf.Variable([[1], [0], [1], [2]])
+    a = tf.one_hot(a, 3)
+    a = tf.squeeze(a)
+    print(a.shape)
 
+    sess.run(tf.global_variables_initializer())
+
+    print(sess.run(a))
+    '''
     #input = np.asarray([[1, 1], [1, 1]])
 
     #state = tf.get_variable(input)  # 2 * 2
@@ -45,12 +53,45 @@ with tf.Session(config=config) as sess:
     print(t2-t1, t3-t2)
 
 
+a = np.array([[1, 2], [3, 4], [5, 6]])
+b = np.array([[0], [1], [0]])
+c = np.array([0, 1, 0])
+
+print(a[b])
+print(a[c])
 '''
-    output = tfd.Normal(loc=[[0, 0], [1, 1]], scale=[[1, 2], [1, 2]])
-
-    print(output.batch_shape)
-
-    print(sess.run(output.prob([[0, 0], [0, 0]])))
-
-    print(sess.run(output.sample(2)))
 '''
+    a = tf.Variable([[1, 2], [3, 4], [5, 6]])
+    a = tf.expand_dims(a, 2)  # [[[1], [2]], [[3], [4]], [[5], [6]]]
+
+    b = tf.Variable([[0, 1, 0], [1, 0, 0], [2, 1, 0]])
+
+    sess.run(tf.global_variables_initializer())
+
+    c = tf.gather_nd(a, b)
+
+    print(sess.run(c))
+
+    #a = np.array([[[1], [2]], [[3], [4]], [[5], [6]]])
+    #b = np.array([[0], [1+2], [1+4]])
+
+    #print(np.take(a, b))
+
+    a = np.array([0, 0, 1])
+    b = np.zeros([3, 3])
+
+    c = np.array([[0, 1, 0], [1, 0, 0], [2, 1, 0]])
+
+    print(c[:, 0])
+
+    b[:, 0] = np.arange(3)
+    b[:, 1] = a
+    b[:, 2] = 0
+
+    print(b)
+
+'''
+
+
+
+
