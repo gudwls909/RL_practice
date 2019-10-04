@@ -35,10 +35,9 @@ class Environment(object):
 
 
 class ReplayMemory(object):
-    def __init__(self, env, state_size, batch_size, length):
+    def __init__(self, state_size, batch_size, length):
         self.length = length
         self.memory = deque(maxlen=self.length)
-        self.env = env
         self.state_size = state_size
         self.batch_size = batch_size
         pass
@@ -111,7 +110,7 @@ class PPO(object):
             std = tf.add(std, tf.constant(0.5, shape=(self.replay.batch_size, self.action_size)))
             #std = tf.ones([self.replay.batch_size, self.action_size])
             output = tf.contrib.distributions.Normal(loc=m, scale=std)
-            sampled_output = output.sample([self.action_size])
+            sampled_output = output.sample()
             return output, sampled_output  # [batch_size, action_size]
             pass
 
@@ -125,8 +124,8 @@ class PPO(object):
             pass
 
     def optimizer(self):
-        policy = self.actor.prob(self.actions)
-        policy_old = self.actor_target.prob(self.actions)
+        policy = tf.clip_by_value(self.actor.prob(self.actions), 1e-10, 1.0)
+        policy_old = tf.clip_by_value(self.actor_target.prob(self.actions), 1e-10, 1.0)
 
         ratio = policy / tf.add(policy_old, tf.constant(1e-10, shape=(self.replay.batch_size, 1)))
         #ratio = tf.exp(tf.log(policy) - tf.log(policy_old))
@@ -135,7 +134,7 @@ class PPO(object):
         min_b = tf.clip_by_value(ratio, 1-self.eps, 1+self.eps) * self.advantage
         actor_loss = tf.reduce_mean(tf.math.minimum(min_a, min_b))
         critic_loss = tf.losses.mean_squared_error(labels=self.target, predictions=self.critic)
-        entropy = -tf.reduce_sum(policy * tf.log(tf.clip_by_value(policy, 1e-10, 1.0)), axis=1)
+        entropy = -tf.reduce_sum(policy * tf.log(policy), axis=1)
         self.entropy = tf.reduce_mean(entropy, axis=0)
         loss = -actor_loss + critic_loss - 0.3 * self.entropy
         self.loss = -actor_loss + critic_loss
@@ -186,14 +185,14 @@ class Agent(object):
         self.gae_parameter = 0.95  # lambda
         self.epochs = 8  # K
         self.ENV = Environment(self.env, self.state_size, self.action_size)
-        self.replay = ReplayMemory(self.env, self.state_size, self.batch_size, self.actor * self.timesteps)
+        self.replay = ReplayMemory(self.state_size, self.batch_size, self.actor * self.timesteps)
         self.ppo = PPO(self.state_size, self.action_size, self.sess, self.learning_rate,
                        self.discount_factor, self.replay, self.epsilon, self.a_bound)
         self.saver = tf.train.Saver()
         pass
 
     def select_action(self, state):
-        policy = self.sess.run(self.ppo.sampled_action, feed_dict={self.ppo.state: state})[0][0]
+        policy = self.sess.run(self.ppo.sampled_action, feed_dict={self.ppo.state: state})[0]
         policy_clip = np.clip(policy, -self.a_bound, self.a_bound)
         return policy_clip
         pass
@@ -229,7 +228,6 @@ class Agent(object):
         for i in range(len(memory)):
             self.replay.add(memory[i][0], memory[i][1], memory[i][2], memory[i][3], memory[i][4], memory[i][5])
         pass
-
 
     def train(self):
         scores, losses, scores2 = [], [], []
@@ -312,7 +310,7 @@ class Agent(object):
 
 if __name__ == "__main__":
 
-    print(sys.executable)
+    #print(sys.executable)
     # parameter 저장하는 parser
     parser = argparse.ArgumentParser(description="Pendulum")
     parser.add_argument('--env_name', default='Pendulum-v0', type=str)
