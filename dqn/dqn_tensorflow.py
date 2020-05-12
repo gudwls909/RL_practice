@@ -5,6 +5,7 @@ import gym
 import random
 import numpy as np
 import argparse
+import time
 import tensorflow as tf
 from collections import deque
 
@@ -139,7 +140,7 @@ class Agent(object):
 		self.sess = sess
 		self.state_size = self.env.observation_space.shape[0]
 		self.action_size = self.env.action_space.n
-		self.env._max_episode_steps = 10000  # 최대 타임스텝 수 10000
+		self.env._max_episode_steps = 500  # 최대 타임스텝 수 10000
 		self.epsilon_decay_steps = args.epsilon_decay_steps
 		self.learning_rate = args.learning_rate
 		self.batch_size = args.batch_size
@@ -187,10 +188,10 @@ class Agent(object):
 					self.dqn.update_target_network()
 					scores.append(score)
 					episodes.append(e)
-					print('episode:', e, ' score:', score, ' epsilon', self.eps,
+					print('episode:', e, ' score:', int(score), ' epsilon', self.eps,
 					      ' last 10 mean score', np.mean(scores[-min(10, len(scores)):]))
 
-					if np.mean(scores[-min(10, len(scores)):]) > 9950:
+					if np.mean(scores[-min(10, len(scores)):]) > self.env._max_episode_steps * 0.95:
 						print('Already well trained')
 						return
 		pass
@@ -208,8 +209,9 @@ class Agent(object):
 			next_state = np.reshape(next_state, [1, self.state_size])
 			score += reward
 			state = next_state
-
+			time.sleep(0.02)
 			if terminal:
+				time.sleep(1)
 				return score
 		pass
 
@@ -229,11 +231,11 @@ if __name__ == "__main__":
 	# parameter 저장하는 parser
 	parser = argparse.ArgumentParser(description="CartPole")
 	parser.add_argument('--env_name', default='CartPole-v1', type=str)
-	parser.add_argument('--epsilon_decay_steps', default=2e4, type=int, help="how many steps for epsilon to be 0.1")
+	parser.add_argument('--epsilon_decay_steps', default=1e4, type=int, help="how many steps for epsilon to be 0.1")
 	parser.add_argument('--learning_rate', default=0.001, type=float)
 	parser.add_argument('--batch_size', default=64, type=int)
 	parser.add_argument('--discount_factor', default=0.99, type=float)
-	parser.add_argument('--episodes', default=1000, type=float)
+	parser.add_argument('--episodes', default=500, type=float)
 	sys.argv = ['-f']
 	args = parser.parse_args()
 
@@ -246,13 +248,13 @@ if __name__ == "__main__":
 	with tf.Session(config=config) as sess:
 		agent = Agent(args, sess)
 		sess.run(tf.global_variables_initializer())  # tensorflow graph가 다 만들어지고 난 후에 해야됨
-		#agent.train()
-		#agent.save()
+		agent.train()
+		agent.save()
 		agent.load()
 		rewards = []
 		for i in range(20):
 			r = agent.play()
-			rewards.append(r)
+			rewards.append(int(r))
 		mean = np.mean(rewards)
 		print(rewards)
 		print(mean)
